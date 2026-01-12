@@ -31,6 +31,8 @@ function App() {
   const [transactions, setTransactions] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState("");
   const [activeTab, setActiveTab] = useState("new-bill");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   // New Bill Form State
   const [newCustomer, setNewCustomer] = useState("");
@@ -209,9 +211,30 @@ function App() {
     }
   };
 
-  const filteredTransactions = selectedCustomer
-    ? transactions.filter((t) => t.customerName === selectedCustomer)
-    : transactions;
+  const filteredTransactions = transactions.filter((t) => {
+    // Filter by customer
+    if (selectedCustomer && t.customerName !== selectedCustomer) {
+      return false;
+    }
+
+    // Filter by date range
+    const transactionDate = new Date(t.date);
+    transactionDate.setHours(0, 0, 0, 0); // Reset time to start of day
+
+    if (startDate) {
+      const start = new Date(startDate);
+      start.setHours(0, 0, 0, 0);
+      if (transactionDate < start) return false;
+    }
+
+    if (endDate) {
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999); // End of day
+      if (transactionDate > end) return false;
+    }
+
+    return true;
+  });
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100">
@@ -371,21 +394,66 @@ function App() {
         {activeTab === "records" && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-lg p-6">
-              <label className="block text-gray-700 font-semibold mb-2 text-lg">
-                Filter by Customer
-              </label>
-              <select
-                value={selectedCustomer}
-                onChange={(e) => setSelectedCustomer(e.target.value)}
-                className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">All Customers</option>
-                {customers.map((customer) => (
-                  <option key={customer._id} value={customer.name}>
-                    {customer.name}
-                  </option>
-                ))}
-              </select>
+              <h3 className="text-xl font-bold text-gray-800 mb-4">Filters</h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-gray-700 font-semibold mb-2">
+                    Customer
+                  </label>
+                  <select
+                    value={selectedCustomer}
+                    onChange={(e) => setSelectedCustomer(e.target.value)}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">All Customers</option>
+                    {customers.map((customer) => (
+                      <option key={customer._id} value={customer.name}>
+                        {customer.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-gray-700 font-semibold mb-2">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={startDate}
+                    onChange={(e) => setStartDate(e.target.value)}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-gray-700 font-semibold mb-2">
+                    End Date
+                  </label>
+                  <input
+                    type="date"
+                    value={endDate}
+                    onChange={(e) => setEndDate(e.target.value)}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {(selectedCustomer || startDate || endDate) && (
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={() => {
+                      setSelectedCustomer("");
+                      setStartDate("");
+                      setEndDate("");
+                    }}
+                    className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-semibold"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              )}
             </div>
 
             {filteredTransactions.map((transaction) => (
