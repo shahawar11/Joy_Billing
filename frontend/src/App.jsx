@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 
-const API_URL = "http://localhost:5000/api";
+const API_URL = "https://joy-billing.onrender.com/api";
 
 // PROPER decimal handling - store as strings, calculate as integers
 const toSmallestUnit = (value) => {
