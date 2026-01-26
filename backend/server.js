@@ -24,6 +24,11 @@ const customerSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+const fishSchema = new mongoose.Schema({
+  name: { type: String, required: true, unique: true },
+  createdAt: { type: Date, default: Date.now },
+});
+
 const transactionSchema = new mongoose.Schema({
   customerName: { type: String, required: true },
   items: [
@@ -31,16 +36,16 @@ const transactionSchema = new mongoose.Schema({
       fishName: String,
       boxes: Number,
       costPerBox: Number,
-      totalPaise: Number, // Store in paise (integer)
+      totalPaise: Number,
     },
   ],
-  totalPaise: { type: Number, required: true }, // Store in paise (integer)
-  paidPaise: { type: Number, default: 0 }, // Store in paise (integer)
-  remainingPaise: { type: Number, required: true }, // Store in paise (integer)
+  totalPaise: { type: Number, required: true },
+  paidPaise: { type: Number, default: 0 },
+  remainingPaise: { type: Number, required: true },
   date: { type: Date, default: Date.now },
   payments: [
     {
-      amountPaise: Number, // Store in paise (integer)
+      amountPaise: Number,
       date: { type: Date, default: Date.now },
       note: String,
     },
@@ -48,6 +53,7 @@ const transactionSchema = new mongoose.Schema({
 });
 
 const Customer = mongoose.model("Customer", customerSchema);
+const Fish = mongoose.model("Fish", fishSchema);
 const Transaction = mongoose.model("Transaction", transactionSchema);
 
 // Routes
@@ -70,6 +76,37 @@ app.post("/api/customers", async (req, res) => {
     res.status(201).json(customer);
   } catch (error) {
     res.status(400).json({ message: error.message });
+  }
+});
+
+// Get all fish names
+app.get("/api/fish", async (req, res) => {
+  try {
+    const fish = await Fish.find().sort({ name: 1 });
+    res.json(fish);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// Add fish name
+app.post("/api/fish", async (req, res) => {
+  try {
+    const fish = new Fish(req.body);
+    await fish.save();
+    res.status(201).json(fish);
+  } catch (error) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+// Delete fish name
+app.delete("/api/fish/:id", async (req, res) => {
+  try {
+    await Fish.findByIdAndDelete(req.params.id);
+    res.json({ message: "Fish deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -163,7 +200,6 @@ app.get("/api/summary/:customerName", async (req, res) => {
       totalCreditPaise: totalCreditPaise,
       totalPaidPaise: totalPaidPaise,
       totalRemainingPaise: totalRemainingPaise,
-      // Also provide rupee values for convenience
       totalCredit: (totalCreditPaise / 100).toFixed(2),
       totalPaid: (totalPaidPaise / 100).toFixed(2),
       totalRemaining: (totalRemainingPaise / 100).toFixed(2),

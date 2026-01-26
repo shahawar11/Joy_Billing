@@ -1,22 +1,15 @@
 import React, { useState, useEffect } from "react";
+import * as XLSX from "xlsx";
 
 const API_URL = "https://joy-billing.onrender.com/api";
 
-// PROPER decimal handling - store as strings, calculate as integers
 const toSmallestUnit = (value) => {
-  // Convert to string, remove any non-numeric except decimal point
   const str = String(value).replace(/[^\d.]/g, "");
   if (!str || str === ".") return 0;
-
-  // Split by decimal point
   const parts = str.split(".");
   const wholePart = parseInt(parts[0] || "0", 10);
   const decimalPart = parts[1] || "00";
-
-  // Pad or truncate to 2 decimal places
   const paddedDecimal = (decimalPart + "00").substring(0, 2);
-
-  // Convert to smallest unit (paise)
   return wholePart * 100 + parseInt(paddedDecimal, 10);
 };
 
@@ -28,25 +21,27 @@ const fromSmallestUnit = (paise) => {
 
 function App() {
   const [customers, setCustomers] = useState([]);
+  const [fishList, setFishList] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState("");
   const [activeTab, setActiveTab] = useState("new-bill");
+  const [viewMode, setViewMode] = useState("cards");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
-  // New Bill Form State
   const [newCustomer, setNewCustomer] = useState("");
   const [items, setItems] = useState([
     { fishName: "", boxes: "", costPerBox: "" },
   ]);
 
-  // Payment State
   const [selectedTransaction, setSelectedTransaction] = useState(null);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
 
   useEffect(() => {
     fetchCustomers();
+    fetchFishList();
     fetchTransactions();
   }, []);
 
@@ -57,6 +52,16 @@ function App() {
       setCustomers(data);
     } catch (error) {
       console.error("Error fetching customers:", error);
+    }
+  };
+
+  const fetchFishList = async () => {
+    try {
+      const res = await fetch(`${API_URL}/fish`);
+      const data = await res.json();
+      setFishList(data);
+    } catch (error) {
+      console.error("Error fetching fish list:", error);
     }
   };
 
@@ -83,6 +88,19 @@ function App() {
     }
   };
 
+  const addFish = async (name) => {
+    try {
+      await fetch(`${API_URL}/fish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      fetchFishList();
+    } catch (error) {
+      console.error("Error adding fish:", error);
+    }
+  };
+
   const addItem = () => {
     setItems([...items, { fishName: "", boxes: "", costPerBox: "" }]);
   };
@@ -103,7 +121,6 @@ function App() {
       if (item.boxes && item.costPerBox) {
         const boxesPaise = toSmallestUnit(item.boxes);
         const costPaise = toSmallestUnit(item.costPerBox);
-        // Both are in paise, multiply gives paise², divide by 100 for paise
         const itemTotal = Math.floor((boxesPaise * costPaise) / 100);
         totalPaise += itemTotal;
       }
@@ -145,12 +162,23 @@ function App() {
     });
 
     try {
+      // Add customer if it doesn't exist
       const customerExists = customers.find(
         (c) => c.name.toLowerCase() === newCustomer.toLowerCase()
       );
 
       if (!customerExists) {
         await addCustomer(newCustomer);
+      }
+
+      // Add fish names if they don't exist
+      for (const item of itemsWithTotal) {
+        const fishExists = fishList.find(
+          (f) => f.name.toLowerCase() === item.fishName.toLowerCase()
+        );
+        if (!fishExists) {
+          await addFish(item.fishName);
+        }
       }
 
       await fetch(`${API_URL}/transactions`, {
@@ -169,6 +197,7 @@ function App() {
       setNewCustomer("");
       setItems([{ fishName: "", boxes: "", costPerBox: "" }]);
       fetchTransactions();
+      fetchFishList();
     } catch (error) {
       console.error("Error creating bill:", error);
       alert("Error creating bill");
@@ -212,14 +241,12 @@ function App() {
   };
 
   const filteredTransactions = transactions.filter((t) => {
-    // Filter by customer
     if (selectedCustomer && t.customerName !== selectedCustomer) {
       return false;
     }
 
-    // Filter by date range
     const transactionDate = new Date(t.date);
-    transactionDate.setHours(0, 0, 0, 0); // Reset time to start of day
+    transactionDate.setHours(0, 0, 0, 0);
 
     if (startDate) {
       const start = new Date(startDate);
@@ -229,12 +256,60 @@ function App() {
 
     if (endDate) {
       const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999); // End of day
+      end.setHours(23, 59, 59, 999);
       if (transactionDate > end) return false;
+    }
+
+    if (statusFilter === "pending" && t.remainingPaise === 0) {
+      return false;
+    }
+    if (statusFilter === "completed" && t.remainingPaise > 0) {
+      return false;
     }
 
     return true;
   });
+
+  const downloadExcel = () => {
+    const excelData = filteredTransactions.map((t) => {
+      const itemsText = t.items
+        .map(
+          (item) =>
+            `${item.fishName} (${item.boxes} boxes × ₹${item.costPerBox})`
+        )
+        .join(", ");
+
+      return {
+        Date: new Date(t.date).toLocaleDateString("en-IN"),
+        Customer: t.customerName,
+        Items: itemsText,
+        "Total Amount (₹)": fromSmallestUnit(t.totalPaise),
+        "Paid Amount (₹)": fromSmallestUnit(t.paidPaise),
+        "Remaining (₹)": fromSmallestUnit(t.remainingPaise),
+        Status: t.remainingPaise === 0 ? "Paid" : "Pending",
+      };
+    });
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Transactions");
+
+    const colWidths = [
+      { wch: 12 },
+      { wch: 20 },
+      { wch: 50 },
+      { wch: 15 },
+      { wch: 15 },
+      { wch: 15 },
+      { wch: 10 },
+    ];
+    ws["!cols"] = colWidths;
+
+    XLSX.writeFile(
+      wb,
+      `Joy_Billing_${new Date().toISOString().split("T")[0]}.xlsx`
+    );
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100">
@@ -244,7 +319,6 @@ function App() {
       </div>
 
       <div className="container mx-auto p-4 max-w-6xl">
-        {/* Tabs */}
         <div className="flex gap-2 mb-6">
           <button
             onClick={() => setActiveTab("new-bill")}
@@ -268,7 +342,6 @@ function App() {
           </button>
         </div>
 
-        {/* New Bill Tab */}
         {activeTab === "new-bill" && (
           <div className="bg-white rounded-xl shadow-xl p-8">
             <h2 className="text-3xl font-bold mb-6 text-gray-800 border-b pb-4">
@@ -285,7 +358,7 @@ function App() {
                 onChange={(e) => setNewCustomer(e.target.value)}
                 list="customers-list"
                 className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition"
-                placeholder="Enter or select customer name (e.g., Kartik)"
+                placeholder="Enter or select customer name"
               />
               <datalist id="customers-list">
                 {customers.map((customer) => (
@@ -314,7 +387,7 @@ function App() {
                 >
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
-                      Fish Name
+                      Fish Name *
                     </label>
                     <input
                       type="text"
@@ -322,9 +395,15 @@ function App() {
                       onChange={(e) =>
                         updateItem(index, "fishName", e.target.value)
                       }
+                      list={`fish-list-${index}`}
                       className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                      placeholder="Vanjiram, Pomfret..."
+                      placeholder="Enter or select fish name"
                     />
+                    <datalist id={`fish-list-${index}`}>
+                      {fishList.map((fish) => (
+                        <option key={fish._id} value={fish.name} />
+                      ))}
+                    </datalist>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
@@ -390,13 +469,36 @@ function App() {
           </div>
         )}
 
-        {/* Records Tab */}
         {activeTab === "records" && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">Filters</h3>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-gray-800">Filters</h3>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setViewMode("cards")}
+                    className={`px-4 py-2 rounded-lg font-semibold transition ${
+                      viewMode === "cards"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                    }`}
+                  >
+                    📇 Cards
+                  </button>
+                  <button
+                    onClick={() => setViewMode("table")}
+                    className={`px-4 py-2 rounded-lg font-semibold transition ${
+                      viewMode === "table"
+                        ? "bg-blue-600 text-white"
+                        : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                    }`}
+                  >
+                    📊 Table
+                  </button>
+                </div>
+              </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-gray-700 font-semibold mb-2">
                     Customer
@@ -412,6 +514,21 @@ function App() {
                         {customer.name}
                       </option>
                     ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-gray-700 font-semibold mb-2">
+                    Status
+                  </label>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="all">All Records</option>
+                    <option value="pending">Pending Only</option>
+                    <option value="completed">Completed Only</option>
                   </select>
                 </div>
 
@@ -440,189 +557,306 @@ function App() {
                 </div>
               </div>
 
-              {(selectedCustomer || startDate || endDate) && (
-                <div className="mt-4 flex justify-end">
+              <div className="mt-4 flex justify-between">
+                {(selectedCustomer ||
+                  startDate ||
+                  endDate ||
+                  statusFilter !== "all") && (
                   <button
                     onClick={() => {
                       setSelectedCustomer("");
                       setStartDate("");
                       setEndDate("");
+                      setStatusFilter("all");
                     }}
                     className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition font-semibold"
                   >
                     Clear Filters
                   </button>
-                </div>
-              )}
+                )}
+                <button
+                  onClick={downloadExcel}
+                  className="ml-auto px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition font-semibold flex items-center gap-2"
+                >
+                  📥 Download Excel
+                </button>
+              </div>
             </div>
 
-            {filteredTransactions.map((transaction) => (
-              <div
-                key={transaction._id}
-                className="bg-white rounded-xl shadow-xl p-6 hover:shadow-2xl transition"
-              >
-                <div className="flex justify-between items-start mb-4 border-b pb-4">
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-800">
-                      {transaction.customerName}
-                    </h3>
-                    <p className="text-gray-600 mt-1">
-                      📅{" "}
-                      {new Date(transaction.date).toLocaleDateString("en-IN", {
-                        day: "numeric",
-                        month: "short",
-                        year: "numeric",
-                      })}
-                    </p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm text-gray-600 font-medium">
-                      Total Amount
-                    </p>
-                    <p className="text-3xl font-bold text-gray-800">
-                      ₹{fromSmallestUnit(transaction.totalPaise)}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="mb-4">
-                  <h4 className="font-semibold text-gray-700 mb-3 text-lg">
-                    Items Purchased:
-                  </h4>
-                  <div className="space-y-2">
-                    {transaction.items.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="bg-gradient-to-r from-blue-50 to-gray-50 p-4 rounded-lg border border-gray-200"
+            {viewMode === "table" ? (
+              <div className="bg-white rounded-xl shadow-xl p-6 overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="bg-gradient-to-r from-blue-600 to-blue-700 text-white">
+                      <th className="p-4 text-left font-bold border">Date</th>
+                      <th className="p-4 text-left font-bold border">
+                        Customer
+                      </th>
+                      <th className="p-4 text-left font-bold border">Items</th>
+                      <th className="p-4 text-right font-bold border">
+                        Total (₹)
+                      </th>
+                      <th className="p-4 text-right font-bold border">
+                        Paid (₹)
+                      </th>
+                      <th className="p-4 text-right font-bold border">
+                        Remaining (₹)
+                      </th>
+                      <th className="p-4 text-center font-bold border">
+                        Status
+                      </th>
+                      <th className="p-4 text-center font-bold border">
+                        Action
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredTransactions.map((transaction, idx) => (
+                      <tr
+                        key={transaction._id}
+                        className={`${
+                          idx % 2 === 0 ? "bg-gray-50" : "bg-white"
+                        } hover:bg-blue-50 transition`}
                       >
-                        <div className="flex justify-between items-center">
-                          <span className="font-semibold text-lg text-gray-800">
-                            🐟 {item.fishName}
+                        <td className="p-4 border text-sm">
+                          {new Date(transaction.date).toLocaleDateString(
+                            "en-IN"
+                          )}
+                        </td>
+                        <td className="p-4 border font-semibold">
+                          {transaction.customerName}
+                        </td>
+                        <td className="p-4 border text-sm">
+                          {transaction.items.map((item, i) => (
+                            <div key={i} className="mb-1">
+                              {item.fishName} ({item.boxes} × ₹{item.costPerBox}
+                              )
+                            </div>
+                          ))}
+                        </td>
+                        <td className="p-4 border text-right font-bold">
+                          ₹{fromSmallestUnit(transaction.totalPaise)}
+                        </td>
+                        <td className="p-4 border text-right text-green-600 font-bold">
+                          ₹{fromSmallestUnit(transaction.paidPaise)}
+                        </td>
+                        <td className="p-4 border text-right text-red-600 font-bold">
+                          ₹{fromSmallestUnit(transaction.remainingPaise)}
+                        </td>
+                        <td className="p-4 border text-center">
+                          <span
+                            className={`px-3 py-1 rounded-full font-bold text-sm ${
+                              transaction.remainingPaise === 0
+                                ? "bg-green-100 text-green-700"
+                                : "bg-orange-100 text-orange-700"
+                            }`}
+                          >
+                            {transaction.remainingPaise === 0
+                              ? "✅ Paid"
+                              : "⏳ Pending"}
                           </span>
-                          <span className="text-gray-700 font-medium">
-                            {item.boxes} boxes × ₹{item.costPerBox} =
-                            <span className="text-blue-600 font-bold ml-2">
-                              ₹{fromSmallestUnit(item.totalPaise)}
-                            </span>
-                          </span>
-                        </div>
-                      </div>
+                        </td>
+                        <td className="p-4 border text-center">
+                          {transaction.remainingPaise > 0 && (
+                            <button
+                              onClick={() => {
+                                setSelectedTransaction(transaction);
+                                setViewMode("cards");
+                              }}
+                              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition font-semibold text-sm"
+                            >
+                              Add Payment
+                            </button>
+                          )}
+                        </td>
+                      </tr>
                     ))}
-                  </div>
-                </div>
+                  </tbody>
+                </table>
 
-                <div className="grid grid-cols-3 gap-4 mb-4 p-5 bg-gradient-to-r from-gray-50 to-blue-50 rounded-lg">
-                  <div className="text-center">
-                    <p className="text-sm text-gray-600 font-medium mb-1">
-                      Paid Amount
-                    </p>
-                    <p className="text-2xl font-bold text-green-600">
-                      ₹{fromSmallestUnit(transaction.paidPaise)}
-                    </p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-gray-600 font-medium mb-1">
-                      Remaining
-                    </p>
-                    <p className="text-2xl font-bold text-red-600">
-                      ₹{fromSmallestUnit(transaction.remainingPaise)}
-                    </p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm text-gray-600 font-medium mb-1">
-                      Status
-                    </p>
-                    <p
-                      className={`text-xl font-bold ${
-                        transaction.remainingPaise === 0
-                          ? "text-green-600"
-                          : "text-orange-600"
-                      }`}
-                    >
-                      {transaction.remainingPaise === 0
-                        ? "✅ Paid"
-                        : "⏳ Pending"}
-                    </p>
-                  </div>
-                </div>
-
-                {transaction.payments && transaction.payments.length > 0 && (
-                  <div className="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
-                    <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                      💸 Payment History:
-                    </h4>
-                    {transaction.payments.map((payment, idx) => (
-                      <div
-                        key={idx}
-                        className="flex justify-between text-sm text-gray-700 mb-2 p-2 bg-white rounded"
-                      >
-                        <span className="font-medium">
-                          {new Date(payment.date).toLocaleDateString("en-IN")}
-                        </span>
-                        <span className="font-bold text-green-600">
-                          ₹{fromSmallestUnit(payment.amountPaise)}
-                        </span>
-                      </div>
-                    ))}
+                {filteredTransactions.length === 0 && (
+                  <div className="text-center py-16 text-gray-400 text-xl">
+                    📋 No transactions found
                   </div>
                 )}
-
-                {transaction.remainingPaise > 0 && (
-                  <div>
-                    {selectedTransaction?._id === transaction._id ? (
-                      <div className="space-y-3 p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
-                        <input
-                          type="text"
-                          value={paymentAmount}
-                          onChange={(e) => setPaymentAmount(e.target.value)}
-                          className="w-full p-3 border-2 border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                          placeholder="Enter payment amount"
-                        />
-                        <input
-                          type="text"
-                          value={paymentNote}
-                          onChange={(e) => setPaymentNote(e.target.value)}
-                          className="w-full p-3 border-2 border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                          placeholder="Note (optional)"
-                        />
-                        <div className="flex gap-2">
-                          <button
-                            onClick={addPayment}
-                            className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 font-semibold shadow-md"
-                          >
-                            ✅ Confirm Payment
-                          </button>
-                          <button
-                            onClick={() => {
-                              setSelectedTransaction(null);
-                              setPaymentAmount("");
-                              setPaymentNote("");
-                            }}
-                            className="flex-1 bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600 font-semibold shadow-md"
-                          >
-                            ❌ Cancel
-                          </button>
-                        </div>
+              </div>
+            ) : (
+              <>
+                {filteredTransactions.map((transaction) => (
+                  <div
+                    key={transaction._id}
+                    className="bg-white rounded-xl shadow-xl p-6 hover:shadow-2xl transition"
+                  >
+                    <div className="flex justify-between items-start mb-4 border-b pb-4">
+                      <div>
+                        <h3 className="text-2xl font-bold text-gray-800">
+                          {transaction.customerName}
+                        </h3>
+                        <p className="text-gray-600 mt-1">
+                          📅{" "}
+                          {new Date(transaction.date).toLocaleDateString(
+                            "en-IN",
+                            {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            }
+                          )}
+                        </p>
                       </div>
-                    ) : (
-                      <button
-                        onClick={() => setSelectedTransaction(transaction)}
-                        className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white py-3 rounded-lg hover:from-blue-700 hover:to-blue-800 font-semibold shadow-lg transform hover:scale-105 transition"
-                      >
-                        💳 Add Payment
-                      </button>
+                      <div className="text-right">
+                        <p className="text-sm text-gray-600 font-medium">
+                          Total Amount
+                        </p>
+                        <p className="text-3xl font-bold text-gray-800">
+                          ₹{fromSmallestUnit(transaction.totalPaise)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mb-4">
+                      <h4 className="font-semibold text-gray-700 mb-3 text-lg">
+                        Items Purchased:
+                      </h4>
+                      <div className="space-y-2">
+                        {transaction.items.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="bg-gradient-to-r from-blue-50 to-gray-50 p-4 rounded-lg border border-gray-200"
+                          >
+                            <div className="flex justify-between items-center">
+                              <span className="font-semibold text-lg text-gray-800">
+                                🐟 {item.fishName}
+                              </span>
+                              <span className="text-gray-700 font-medium">
+                                {item.boxes} boxes × ₹{item.costPerBox} =
+                                <span className="text-blue-600 font-bold ml-2">
+                                  ₹{fromSmallestUnit(item.totalPaise)}
+                                </span>
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-4 mb-4 p-5 bg-gradient-to-r from-gray-50 to-blue-50 rounded-lg">
+                      <div className="text-center">
+                        <p className="text-sm text-gray-600 font-medium mb-1">
+                          Paid Amount
+                        </p>
+                        <p className="text-2xl font-bold text-green-600">
+                          ₹{fromSmallestUnit(transaction.paidPaise)}
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm text-gray-600 font-medium mb-1">
+                          Remaining
+                        </p>
+                        <p className="text-2xl font-bold text-red-600">
+                          ₹{fromSmallestUnit(transaction.remainingPaise)}
+                        </p>
+                      </div>
+                      <div className="text-center">
+                        <p className="text-sm text-gray-600 font-medium mb-1">
+                          Status
+                        </p>
+                        <p
+                          className={`text-xl font-bold ${
+                            transaction.remainingPaise === 0
+                              ? "text-green-600"
+                              : "text-orange-600"
+                          }`}
+                        >
+                          {transaction.remainingPaise === 0
+                            ? "✅ Paid"
+                            : "⏳ Pending"}
+                        </p>
+                      </div>
+                    </div>
+
+                    {transaction.payments &&
+                      transaction.payments.length > 0 && (
+                        <div className="mb-4 p-4 bg-green-50 rounded-lg border border-green-200">
+                          <h4 className="font-semibold text-gray-700 mb-3 flex items-center gap-2">
+                            💸 Payment History:
+                          </h4>
+                          {transaction.payments.map((payment, idx) => (
+                            <div
+                              key={idx}
+                              className="flex justify-between text-sm text-gray-700 mb-2 p-2 bg-white rounded"
+                            >
+                              <span className="font-medium">
+                                {new Date(payment.date).toLocaleDateString(
+                                  "en-IN"
+                                )}
+                              </span>
+                              <span className="font-bold text-green-600">
+                                ₹{fromSmallestUnit(payment.amountPaise)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                    {transaction.remainingPaise > 0 && (
+                      <div>
+                        {selectedTransaction?._id === transaction._id ? (
+                          <div className="space-y-3 p-4 bg-blue-50 rounded-lg border-2 border-blue-200">
+                            <input
+                              type="text"
+                              value={paymentAmount}
+                              onChange={(e) => setPaymentAmount(e.target.value)}
+                              className="w-full p-3 border-2 border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                              placeholder="Enter payment amount"
+                            />
+                            <input
+                              type="text"
+                              value={paymentNote}
+                              onChange={(e) => setPaymentNote(e.target.value)}
+                              className="w-full p-3 border-2 border-blue-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                              placeholder="Note (optional)"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={addPayment}
+                                className="flex-1 bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 font-semibold shadow-md"
+                              >
+                                ✅ Confirm Payment
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setSelectedTransaction(null);
+                                  setPaymentAmount("");
+                                  setPaymentNote("");
+                                }}
+                                className="flex-1 bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600 font-semibold shadow-md"
+                              >
+                                ❌ Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setSelectedTransaction(transaction)}
+                            className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white py-3 rounded-lg hover:from-blue-700 hover:to-blue-800 font-semibold shadow-lg transform hover:scale-105 transition"
+                          >
+                            💳 Add Payment
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
-            ))}
+                ))}
 
-            {filteredTransactions.length === 0 && (
-              <div className="bg-white rounded-xl shadow-lg p-16 text-center">
-                <p className="text-gray-400 text-2xl">
-                  📋 No transactions found
-                </p>
-              </div>
+                {filteredTransactions.length === 0 && (
+                  <div className="bg-white rounded-xl shadow-lg p-16 text-center">
+                    <p className="text-gray-400 text-2xl">
+                      📋 No transactions found
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
