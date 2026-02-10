@@ -50,7 +50,10 @@ const transactionSchema = new mongoose.Schema({
       note: String,
     },
   ],
+  
 });
+transactionSchema.index({ date: -1 }); // 🔥 for all transactions
+transactionSchema.index({ customerName: 1, date: -1 }); // 🔥 for customer history
 
 const Customer = mongoose.model("Customer", customerSchema);
 const Fish = mongoose.model("Fish", fishSchema);
